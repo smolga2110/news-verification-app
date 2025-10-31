@@ -154,9 +154,8 @@ app.get('/api/test', (req, res) => {
   res.json({ 
     message: 'Сервер работает!',
     endpoints: [
-      '/api/news - Все новости (RSS + Telegram)',
+      '/api/news - Все новости',
       '/api/telegram - Только Telegram каналы',
-      '/api/telegram/:channel - Конкретный Telegram канал'
     ]
   });
 });
