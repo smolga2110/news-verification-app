@@ -65,6 +65,88 @@ async function fetchTelegramWithFallback(pub){
     return null
 }
 
+function normalizeText(text) {
+    return text
+        .toLowerCase()
+        .replace(/[^\w\sа-яё]/gi, ' ')
+        .replace(/\s+/g, ' ') 
+        .trim()
+        .substring(0, 200);
+}
+
+function createNewsKey(newsItem) {
+    const titleKey = normalizeText(newsItem.title);
+    const contentKey = normalizeText(newsItem.content || '').substring(0, 100);
+    return `${titleKey}_${contentKey}`;
+}
+
+function isSameNews(news1, news2, threshold = 0.6) {
+    const key1 = createNewsKey(news1);
+    const key2 = createNewsKey(news2);
+    
+    if (key1 === key2) return true;
+    
+    const words1 = key1.split(' ');
+    const words2 = key2.split(' ');
+    
+    const commonWords = words1.filter(word => 
+        word.length > 3 && words2.includes(word)
+    );
+    
+    const similarity = commonWords.length / Math.max(words1.length, words2.length);
+    return similarity > threshold;
+}
+
+function groupSimilarNews(newsItems) {
+    const groups = [];
+    
+    for (const news of newsItems) {
+        let foundGroup = false;
+        
+        for (const group of groups) {
+            if (isSameNews(group.original, news)) {
+                group.sources.push({
+                    source: news.source,
+                    sourceUrl: news.sourceUrl,
+                    type: news.type,
+                    publishedAt: news.pubDate,
+                    originalTitle: news.title,
+                    originalLink: news.link
+                });
+                
+                if (new Date(news.pubDate) < new Date(group.earliestPubDate)) {
+                    group.earliestPubDate = news.pubDate;
+                }
+                
+                foundGroup = true;
+                break;
+            }
+        }
+        
+        if (!foundGroup) {
+            groups.push({
+                id: createNewsKey(news), 
+                title: news.title,
+                content: news.content,
+                link: news.link,
+                earliestPubDate: news.pubDate,
+                original: news, 
+                sources: [{
+                    source: news.source,
+                    sourceUrl: news.sourceUrl,
+                    type: news.type,
+                    publishedAt: news.pubDate,
+                    originalTitle: news.title,
+                    originalLink: news.link
+                }]
+            });
+        }
+    }
+    
+    return groups;
+}
+
+
 app.get('/api/news', async (req, res) => {
   try {
     const allNews = [];
@@ -75,7 +157,7 @@ app.get('/api/news', async (req, res) => {
         const newsItems = feed.items.map(item => ({
           title: item.title,
           link: item.link,
-          content: item.contentSnippet || item.content,
+          content: item.contentSnippet || item.content || '',
           pubDate: item.pubDate,
           source: feed.title,
           sourceUrl: feedUrl,
@@ -86,7 +168,7 @@ app.get('/api/news', async (req, res) => {
         console.error(`Ошибка парсинга ${feedUrl}:`, error.message);
       }
     }
-
+    
     for (const tgPub of tgPublics) {
       try {
         const telegramData = await fetchTelegramWithFallback(tgPub);
@@ -94,7 +176,7 @@ app.get('/api/news', async (req, res) => {
           const tgItems = telegramData.data.items.map(item => ({
             title: item.title,
             link: item.link,
-            content: item.contentSnippet || item.content,
+            content: item.contentSnippet || item.content || '',
             pubDate: item.pubDate,
             source: `Telegram: ${tgPub}`,
             sourceUrl: `https://t.me/${tgPub}`,
@@ -107,12 +189,15 @@ app.get('/api/news', async (req, res) => {
       }
     }
     
-    allNews.sort((a, b) => new Date(b.pubDate) - new Date(a.pubDate));
+    const groupedNews = groupSimilarNews(allNews);
+    
+    groupedNews.sort((a, b) => new Date(b.earliestPubDate) - new Date(a.earliestPubDate));
     
     res.json({
       success: true,
-      count: allNews.length,
-      news: allNews.slice(0, 100)
+      count: groupedNews.length,
+      totalSources: allNews.length,
+      news: groupedNews.slice(0, 100)
     });
     
   } catch (error) {
